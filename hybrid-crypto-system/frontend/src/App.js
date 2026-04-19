@@ -195,81 +195,27 @@ export default function App() {
   };
 
   // ── Decrypt ───────────────────────────────────────────────────────────────
-  const handleDecrypt = async (envelope) => {
-    setDecryptingId(envelope.id);
-    setTamperAlert(null);
-    try {
-      const res  = await fetch(`${API}/decrypt/${envelope.id}`, { method: 'POST' });
-      const data = await res.json();
-      if (!data.success) throw new Error(data.error);
+  // NEW
+const handleDecrypt = async (envelope) => {
+  setDecryptingId(envelope.id);
+  setTamperAlert(null);
 
-      appendCryptoLog({
-        type:   'decrypt',
-        msg:    `AES session key unwrapped by server`,
-        detail: `Envelope #${envelope.id} | ${envelope.fileName} | Local AES-GCM decrypt starting...`,
-        params: { aesKeyBits: data.aesKeyBits, tagBits: data.tagBits },
-      });
-
-      const { plaintext, fileName } = await hybridDecryptEnvelope(data);
-      downloadDecryptedFile(plaintext, fileName);
-
-      appendCryptoLog({
-        type:   'decrypt-ok',
-        msg:    `Decryption successful — file downloaded`,
-        detail: `AES-256-GCM auth-tag verified. File: ${fileName}`,
-        params: {},
-      });
-    } catch (err) {
-      if (err.tampered) {
-        setTamperAlert({ id: envelope.id, fileName: envelope.fileName });
-        appendCryptoLog({
-          type:   'tamper',
-          msg:    '🚨 TAMPER DETECTED',
-          detail: 'AES-GCM 128-bit authentication tag mismatch. Ciphertext was modified after encryption.',
-          params: {},
-        });
-      } else {
-        setLastResult({ ok: false, msg: `Decryption failed: ${err.message || err}` });
-      }
-    } finally {
+  // Prompt for password BEFORE the fetch so we fail fast on cancel
+  let decryptPassword = null;
+  if (envelope.passwordProtected) {
+    decryptPassword = window.prompt(`🔐 Enter password for "${envelope.fileName}":`);
+    if (decryptPassword === null) {          // user hit Cancel
       setDecryptingId(null);
+      return;
     }
-  };
+  }
 
-  // ── Verify Integrity ──────────────────────────────────────────────────────
-  const handleVerify = async (envelope) => {
-    setVerifyingId(envelope.id);
-    try {
-      const res  = await fetch(`${API}/verify/${envelope.id}`, { method: 'POST' });
-      const data = await res.json();
-      setVerifyResult(prev => ({ ...prev, [envelope.id]: data.verified }));
-      appendCryptoLog({
-        type:   data.verified ? 'verify-ok' : 'verify-fail',
-        msg:    data.verified ? '✅ Signature VALID' : '❌ Signature INVALID',
-        detail: `${envelope.fileName} | ECDSA-P256-SHA256 | ${data.detail}`,
-        params: {},
-      });
-    } finally {
-      setVerifyingId(null);
-    }
-  };
-
-  // ── Simulate Tamper (demo) ────────────────────────────────────────────────
-  const handleSimulateTamper = async (envelope) => {
-    setTamperingId(envelope.id);
-    try {
-      await fetch(`${API}/tamper/${envelope.id}`, { method: 'POST' });
-      appendCryptoLog({
-        type:   'tamper-sim',
-        msg:    `🔧 Tamper simulated on envelope #${envelope.id}`,
-        detail: 'Byte[0] XOR 0xFF. Attempt decryption to see Tamper Alert.',
-        params: {},
-      });
-      setLastResult({ ok: false, msg: `⚠️ Ciphertext of #${envelope.id} corrupted. Try decrypting to trigger the Tamper Alert.` });
-    } finally {
-      setTamperingId(null);
-    }
-  };
+  try {
+    const res  = await fetch(`${API}/decrypt/${envelope.id}`, { method: 'POST' });
+    const data = await res.json();
+    if (!data.success) throw new Error(data.error);
+    ...
+    const { plaintext, fileName } = await hybridDecryptEnvelope(data, decryptPassword);
 
   // ── Shred ─────────────────────────────────────────────────────────────────
   const handleShred = async (envelope) => {

@@ -225,6 +225,21 @@ export const wrapKeyWithPassword = async (aesKey, passwordKey) => {
   return { wrapped, wrapIv };
 };
 
+export const unwrapKeyWithPassword = async (pwWrappedBase64, pwWrapIvBase64, pbkdf2SaltBase64, password) => {
+  const salt      = new Uint8Array(fromBase64(pbkdf2SaltBase64));
+  const passwordKey = await deriveKeyFromPassword(password, salt);
+  const wrapIv    = new Uint8Array(fromBase64(pwWrapIvBase64));
+  return subtle.unwrapKey(
+    'raw',
+    fromBase64(pwWrappedBase64),
+    passwordKey,
+    { name: 'AES-GCM', iv: wrapIv, tagLength: 128 },
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['decrypt']
+  );
+};
+
 // ─── Full Hybrid Encrypt Flow ─────────────────────────────────────────────────
 
 /**
@@ -289,16 +304,19 @@ export const hybridEncryptFile = async (
   // Step 6: Optional PBKDF2 password layer
   let pbkdf2SaltBase64 = null;
   let passwordProtected = false;
+  // NEW
+  let pwWrappedAesKeyBase64 = null;
+  let pwWrapIvBase64        = null;
   if (password) {
     addLog('Applying PBKDF2 password layer (SHA-256, 310,000 iterations)...');
     const salt = randomBytes(16);
     pbkdf2SaltBase64 = toBase64(salt);
     const passKey = await deriveKeyFromPassword(password, salt);
-    const { wrapped: pwWrapped } = await wrapKeyWithPassword(aesKey, passKey);
-    passwordProtected = true;
+    const { wrapped: pwWrapped, wrapIv } = await wrapKeyWithPassword(aesKey, passKey);
+    pwWrappedAesKeyBase64 = toBase64(pwWrapped);
+    pwWrapIvBase64        = toBase64(wrapIv);
+    passwordProtected     = true;
     addLog('Password layer applied.', `PBKDF2-SHA256 | Iterations: 310,000 | Salt: ${toHex(salt)}`);
-    // Note: in a full impl, pwWrapped would replace or supplement encryptedAesKeyBase64
-    void pwWrapped; // referenced to avoid unused warning
   }
 
   return {
@@ -313,6 +331,9 @@ export const hybridEncryptFile = async (
     signingPublicKeyBase64: sigPubKeyB64,
     passwordProtected,
     pbkdf2SaltBase64,
+    // add alongside pbkdf2SaltBase64 in the return payload
+    pwWrappedAesKeyBase64,
+    pwWrapIvBase64,
     // Crypto parameter transparency
     cryptoParams: {
       aesKeyBits:    keyBits,
@@ -337,18 +358,32 @@ export const hybridEncryptFile = async (
  * If the GCM authentication tag does not match (tampered ciphertext),
  * this function throws with { tampered: true }.
  */
-export const hybridDecryptEnvelope = async (serverResponse) => {
-  const { encryptedFileBase64, ivBase64, rawAesKeyBase64, fileName } = serverResponse;
+// NEW
+export const hybridDecryptEnvelope = async (serverResponse, password = null) => {
+  const {
+    encryptedFileBase64, ivBase64, fileName,
+    rawAesKeyBase64,
+    passwordProtected, pwWrappedAesKeyBase64, pwWrapIvBase64, pbkdf2SaltBase64,
+  } = serverResponse;
 
-  // Import raw AES key material returned by server
-  const aesKey = await importRawAESKey(fromBase64(rawAesKeyBase64));
+  let aesKey;
+  if (passwordProtected) {
+    if (!password) throw new Error('Password required to decrypt this envelope.');
+    try {
+      aesKey = await unwrapKeyWithPassword(
+        pwWrappedAesKeyBase64, pwWrapIvBase64, pbkdf2SaltBase64, password
+      );
+    } catch {
+      throw new Error('Incorrect password — PBKDF2 key derivation or unwrap failed.');
+    }
+  } else {
+    aesKey = await importRawAESKey(fromBase64(rawAesKeyBase64));
+  }
 
   try {
-    // AES-256-GCM decrypt — auth-tag verification is automatic
     const plaintext = await decryptAES(fromBase64(encryptedFileBase64), aesKey, ivBase64);
     return { plaintext, fileName, tampered: false };
   } catch (err) {
-    // AES-GCM auth-tag mismatch → ciphertext was tampered
     throw { tampered: true, message: 'AES-GCM authentication tag mismatch — ciphertext has been tampered!', raw: err };
   }
 };

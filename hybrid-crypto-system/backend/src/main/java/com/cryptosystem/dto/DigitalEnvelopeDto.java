@@ -31,4 +31,8 @@ public class DigitalEnvelopeDto {
     // ─── PBKDF2 optional layer ────────────────────────────────────────────
     private boolean passwordProtected;
     private String  pbkdf2SaltBase64;
+
+    // add after pbkdf2SaltBase64
+    private String pwWrappedAesKeyBase64;
+    private String pwWrapIvBase64;
 }

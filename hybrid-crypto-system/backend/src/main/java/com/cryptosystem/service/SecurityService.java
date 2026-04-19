@@ -14,6 +14,7 @@ import javax.crypto.spec.PSource;
 import java.security.*;
 import java.security.spec.*;
 import java.util.Base64;
+import java.util.Arrays;
 
 /**
  * Core cryptographic service.
@@ -114,8 +115,41 @@ public class SecurityService {
         sig.initVerify(signingKey);
         sig.update(data);
 
-        return sig.verify(sigBytes);
+        return sig.verify(p1363ToDer(sigBytes));
     }
+
+    /**
+ * WebCrypto outputs ECDSA signatures in IEEE P1363 format (raw R||S, 64 bytes for P-256).
+ * Java's SHA256withECDSA expects ASN.1 DER. This converts between them.
+ */
+private byte[] p1363ToDer(byte[] p1363) {
+    int coordLen = p1363.length / 2;                    // 32 for P-256
+    byte[] r = Arrays.copyOfRange(p1363, 0, coordLen);
+    byte[] s = Arrays.copyOfRange(p1363, coordLen, p1363.length);
+
+    // DER integers are signed: prepend 0x00 if high bit is set
+    if ((r[0] & 0x80) != 0) r = prependZero(r);
+    if ((s[0] & 0x80) != 0) s = prependZero(s);
+
+    int seqLen = 2 + r.length + 2 + s.length;          // tag+len for each INTEGER
+    byte[] der = new byte[2 + seqLen];                  // SEQUENCE tag + length
+    int i = 0;
+    der[i++] = 0x30;                                    // SEQUENCE
+    der[i++] = (byte) seqLen;
+    der[i++] = 0x02;                                    // INTEGER r
+    der[i++] = (byte) r.length;
+    System.arraycopy(r, 0, der, i, r.length); i += r.length;
+    der[i++] = 0x02;                                    // INTEGER s
+    der[i++] = (byte) s.length;
+    System.arraycopy(s, 0, der, i, s.length);
+    return der;
+}
+
+private byte[] prependZero(byte[] b) {
+    byte[] out = new byte[b.length + 1];
+    System.arraycopy(b, 0, out, 1, b.length);           // out[0] = 0x00 already
+    return out;
+}
 
     /**
      * SHA-256 fingerprint of the server's RSA public key — displayed in the UI.

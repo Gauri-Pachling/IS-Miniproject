@@ -114,6 +114,8 @@ public class SecurityController {
                     // PBKDF2
                     .passwordProtected(dto.isPasswordProtected())
                     .pbkdf2SaltBase64(dto.getPbkdf2SaltBase64())
+                    .pwWrappedAesKeyBase64(dto.getPwWrappedAesKeyBase64())
+                    .pwWrapIvBase64(dto.getPwWrapIvBase64())
                     // Crypto parameter audit trail
                     .aesKeyBits("256")
                     .ivBits("96")
@@ -255,7 +257,15 @@ public class SecurityController {
             response.put("fileName",             envelope.getFileName());
             response.put("encryptedFileBase64",  envelope.getEncryptedFileBase64());
             response.put("ivBase64",             envelope.getIvBase64());
-            response.put("rawAesKeyBase64",      rawAesKeyBase64);  // 32 raw bytes
+            // NEW — password-protected envelopes send pw-wrapped key; browser unwraps with password
+                response.put("passwordProtected", envelope.isPasswordProtected());
+                if (envelope.isPasswordProtected()) {
+                response.put("pwWrappedAesKeyBase64", envelope.getPwWrappedAesKeyBase64());
+                response.put("pwWrapIvBase64",        envelope.getPwWrapIvBase64());
+                response.put("pbkdf2SaltBase64",      envelope.getPbkdf2SaltBase64());
+                } else {
+                response.put("rawAesKeyBase64", rawAesKeyBase64);
+                }  // 32 raw bytes
             response.put("aesKeyBits",           envelope.getAesKeyBits());
             response.put("tagBits",              envelope.getTagBits());
             response.put("note", "AES session key decapsulated server-side. " +

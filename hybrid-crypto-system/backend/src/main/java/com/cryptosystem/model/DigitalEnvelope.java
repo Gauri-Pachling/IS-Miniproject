@@ -64,6 +64,12 @@ public class DigitalEnvelope {
     /** PBKDF2 salt (Base64) — only set when passwordProtected=true */
     private String pbkdf2SaltBase64;
 
+        // add after pbkdf2SaltBase64
+    @Column(columnDefinition = "TEXT")
+    private String pwWrappedAesKeyBase64;
+
+    private String pwWrapIvBase64;
+
     // ─── Crypto Parameters (for audit transparency) ────────────────────────
     private String aesKeyBits;       // "256"
     private String ivBits;           // "96"
