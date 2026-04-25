@@ -76,8 +76,7 @@ class SecurityControllerIntegrationTest {
                   "ivBase64": "aXYtMTIzNDU2Nzg5MDE=",
                   "encryptedAesKeyBase64": "ZW5jcnlwdGVkLWFlcy1rZXk=",
                   "signatureBase64": "c2lnbmF0dXJl",
-                  "signingPublicKeyBase64": "cHVia2V5",
-                  "passwordProtected": false
+                                                                        "signingPublicKeyBase64": "cHVia2V5"
                 }
                 """;
 
@@ -92,40 +91,18 @@ class SecurityControllerIntegrationTest {
         mockMvc.perform(get("/api/crypto/envelopes"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$[0].fileName").value("message.txt"))
-                .andExpect(jsonPath("$[0].passwordProtected").value(false))
                 .andExpect(jsonPath("$[0].symAlgorithm").value("AES-256-GCM"));
     }
 
     @Test
     void decrypt_shouldReturnRawAesKeyForNonPasswordProtectedEnvelope() throws Exception {
         DigitalEnvelope envelope = baseEnvelope();
-        envelope.setPasswordProtected(false);
         envelope = envelopeRepository.save(envelope);
 
         mockMvc.perform(post("/api/crypto/decrypt/{id}", envelope.getId()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.success").value(true))
-                .andExpect(jsonPath("$.passwordProtected").value(false))
                 .andExpect(jsonPath("$.rawAesKeyBase64").value("AQIDBA=="));
-    }
-
-    @Test
-    void decrypt_shouldReturnPasswordWrapMaterialForPasswordProtectedEnvelope() throws Exception {
-        DigitalEnvelope envelope = baseEnvelope();
-        envelope.setPasswordProtected(true);
-        envelope.setPbkdf2SaltBase64("c2FsdA==");
-        envelope.setPwWrappedAesKeyBase64("cHctd3JhcHBlZC1rZXk=");
-        envelope.setPwWrapIvBase64("cHctaXY=");
-        envelope = envelopeRepository.save(envelope);
-
-        mockMvc.perform(post("/api/crypto/decrypt/{id}", envelope.getId()))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.success").value(true))
-                .andExpect(jsonPath("$.passwordProtected").value(true))
-                .andExpect(jsonPath("$.pwWrappedAesKeyBase64").value("cHctd3JhcHBlZC1rZXk="))
-                .andExpect(jsonPath("$.pwWrapIvBase64").value("cHctaXY="))
-                .andExpect(jsonPath("$.pbkdf2SaltBase64").value("c2FsdA=="))
-                .andExpect(jsonPath("$.rawAesKeyBase64").doesNotExist());
     }
 
     @Test
@@ -178,7 +155,6 @@ class SecurityControllerIntegrationTest {
                 .encryptedAesKeyBase64("ZW5jcnlwdGVkLWtleQ==")
                 .signatureBase64("c2ln")
                 .signingPublicKeyBase64("cHVi")
-                .passwordProtected(false)
                 .aesKeyBits("256")
                 .ivBits("96")
                 .tagBits("128")

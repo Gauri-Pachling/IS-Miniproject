@@ -27,12 +27,4 @@ public class DigitalEnvelopeDto {
     // ─── ECDSA-P256 digital signature ─────────────────────────────────────
     private String signatureBase64;
     private String signingPublicKeyBase64;
-
-    // ─── PBKDF2 optional layer ────────────────────────────────────────────
-    private boolean passwordProtected;
-    private String  pbkdf2SaltBase64;
-
-    // add after pbkdf2SaltBase64
-    private String pwWrappedAesKeyBase64;
-    private String pwWrapIvBase64;
 }

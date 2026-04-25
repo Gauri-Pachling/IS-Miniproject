@@ -38,8 +38,6 @@ export default function App() {
   const [activeTab,        setActiveTab]        = useState('encrypt');  // encrypt | files | audit
   const [dragOver,         setDragOver]         = useState(false);
   const [selectedFile,     setSelectedFile]     = useState(null);
-  const [password,         setPassword]         = useState('');
-  const [showPassword,     setShowPassword]     = useState(false);
 
   // ── Operation state ───────────────────────────────────────────────────────
   const [encrypting,       setEncrypting]       = useState(false);
@@ -51,6 +49,8 @@ export default function App() {
   const [verifyResult,     setVerifyResult]     = useState({});      // {[id]: bool}
   const [shreddingId,      setShreddingId]      = useState(null);
   const [tamperingId,      setTamperingId]      = useState(null);
+  const [tamperLabStates,  setTamperLabStates]  = useState({});       // {[id]: {target, attempts, autoDecrypt, results}}
+  const [tamperResults,    setTamperResults]    = useState({});       // {[id]: {steps, detected}}
 
   // ── Data ──────────────────────────────────────────────────────────────────
   const [envelopes,        setEnvelopes]        = useState([]);
@@ -108,6 +108,25 @@ export default function App() {
   const appendCryptoLog = (entry) =>
     setCryptoLog(prev => [{ id: Date.now(), ts: new Date().toISOString(), ...entry }, ...prev].slice(0, 50));
 
+  const getTamperTargetMeta = (target) => {
+    if (target === 'iv') {
+      return {
+        label: 'Initialization Vector (IV)',
+        expectedSignal: 'AES-GCM authentication failure',
+      };
+    }
+    if (target === 'tag') {
+      return {
+        label: 'Signature Material',
+        expectedSignal: 'Signature verification failure',
+      };
+    }
+    return {
+      label: 'Ciphertext Payload',
+      expectedSignal: 'AES-GCM authentication failure',
+    };
+  };
+
   // ── File selection ────────────────────────────────────────────────────────
   const handleFileSelect = (file) => {
     if (!file) return;
@@ -138,7 +157,6 @@ export default function App() {
         rsaPublicKey,
         signingKeyPair.privateKey,
         signingKeyPair.publicKey,
-        password || null,
         (step) => setEncryptProgress(step * 14)
       );
 
@@ -165,8 +183,6 @@ export default function App() {
           encryptedAesKeyBase64: envelope.encryptedAesKeyBase64,
           signatureBase64:       envelope.signatureBase64,
           signingPublicKeyBase64: envelope.signingPublicKeyBase64,
-          passwordProtected:     envelope.passwordProtected,
-          pbkdf2SaltBase64:      envelope.pbkdf2SaltBase64,
         }),
       });
       const result = await res.json();
@@ -177,11 +193,10 @@ export default function App() {
         appendCryptoLog({
           type:   'upload-ok',
           msg:    `Envelope #${result.envelopeId} stored`,
-          detail: `fileName: ${envelope.fileName} | passwordProtected: ${envelope.passwordProtected}`,
+          detail: `fileName: ${envelope.fileName}`,
           params: {},
         });
         setSelectedFile(null);
-        setPassword('');
       } else {
         throw new Error(result.error || 'Upload failed');
       }
@@ -198,16 +213,6 @@ export default function App() {
   const handleDecrypt = async (envelope) => {
   setDecryptingId(envelope.id);
   setTamperAlert(null);
-
-  // Prompt for password BEFORE the fetch so we fail fast on cancel
-  let decryptPassword = null;
-  if (envelope.passwordProtected) {
-    decryptPassword = window.prompt(`🔐 Enter password for "${envelope.fileName}":`);
-    if (decryptPassword === null) {          // user hit Cancel
-      setDecryptingId(null);
-      return;
-    }
-  }
 
   try {
     const res  = await fetch(`${API}/decrypt/${envelope.id}`, { method: 'POST' });
@@ -265,18 +270,168 @@ export default function App() {
     }
   };
 
-  // ── Simulate Tamper (demo) ────────────────────────────────────────────────
-  const handleSimulateTamper = async (envelope) => {
+  // ── Tamper Lab State Management ───────────────────────────────────────────
+  const toggleTamperLab = (envelopeId) => {
+    setTamperLabStates(prev => ({
+      ...prev,
+      [envelopeId]: prev[envelopeId] ? null : {
+        target: 'ciphertext',
+        attempts: 1,
+        autoDecrypt: false,
+        expanded: true,
+      }
+    }));
+  };
+
+  const updateTamperLabState = (envelopeId, updates) => {
+    setTamperLabStates(prev => ({
+      ...prev,
+      [envelopeId]: { ...prev[envelopeId], ...updates }
+    }));
+  };
+
+  // ── Execute Tamper Lab Attack ─────────────────────────────────────────────
+  const handleExecuteTamperLab = async (envelope) => {
+    const labState = tamperLabStates[envelope.id];
+    if (!labState) return;
+
+    const target = labState.target || 'ciphertext';
+    const attempts = Math.min(5, Math.max(1, Number(labState.attempts) || 1));
+    const { label: targetLabel, expectedSignal } = getTamperTargetMeta(target);
+
     setTamperingId(envelope.id);
+    const steps = [];
+    let verificationRuns = 0;
+    let detectedCount = 0;
+
     try {
-      await fetch(`${API}/tamper/${envelope.id}`, { method: 'POST' });
-      appendCryptoLog({
-        type:   'tamper-sim',
-        msg:    `🔧 Tamper simulated on envelope #${envelope.id}`,
-        detail: 'Byte[0] XOR 0xFF. Attempt decryption to see Tamper Alert.',
-        params: {},
+      for (let attempt = 1; attempt <= attempts; attempt++) {
+        const stepResult = {
+          attempt,
+          stage: 'tamper',
+          status: null,
+          message: '',
+          detail: '',
+          timestamp: new Date().toLocaleTimeString(),
+        };
+
+        try {
+          const res = await fetch(
+            `${API}/tamper/${envelope.id}?target=${target}&attempt=${attempt}`,
+            { method: 'POST' }
+          );
+          const data = await res.json();
+
+          if (res.ok && data.success) {
+            stepResult.status = 'success';
+            const tamperedField = data.corruptedField || `${target} field`;
+            stepResult.message = `Tampered ${targetLabel}`;
+            const charMutation = data.mutatedBase64CharIndex >= 0
+              ? `Base64 char[${data.mutatedBase64CharIndex}] '${data.beforeBase64Char}' -> '${data.afterBase64Char}'`
+              : 'Base64 character delta not available';
+            stepResult.detail = `${tamperedField} byte[${data.mutatedByteIndex}] ${data.beforeByteHex} -> ${data.afterByteHex} | ${charMutation}.`;
+            appendCryptoLog({
+              type:   'tamper-lab',
+              msg:    `Tamper Lab attempt ${attempt}/${attempts}`,
+              detail: `Target: ${targetLabel} | ${tamperedField} byte[${data.mutatedByteIndex}] ${data.beforeByteHex} -> ${data.afterByteHex}`,
+              params: {
+                target,
+                corruptedField: tamperedField,
+                expectedSignal,
+                mutatedByteIndex: data.mutatedByteIndex,
+                beforeByteHex: data.beforeByteHex,
+                afterByteHex: data.afterByteHex,
+                mutatedBase64CharIndex: data.mutatedBase64CharIndex,
+                beforeBase64Char: data.beforeBase64Char,
+                afterBase64Char: data.afterBase64Char,
+              },
+            });
+          } else {
+            stepResult.status = 'error';
+            stepResult.message = data.error || 'Tamper failed';
+          }
+        } catch (err) {
+          stepResult.status = 'error';
+          stepResult.message = err.message;
+        }
+
+        steps.push(stepResult);
+
+        if (labState.autoDecrypt) {
+          verificationRuns += 1;
+          const decryptStep = {
+            attempt,
+            stage: 'decrypt',
+            status: null,
+            message: '',
+            detail: '',
+            timestamp: new Date().toLocaleTimeString(),
+          };
+
+          try {
+            const decRes = await fetch(`${API}/decrypt/${envelope.id}`, { method: 'POST' });
+            const decData = await decRes.json();
+
+            if (!decRes.ok || !decData.success) {
+              throw new Error(decData.error || 'Server could not prepare decrypt response');
+            }
+
+            try {
+              await hybridDecryptEnvelope(decData);
+              decryptStep.status = 'undetected';
+              decryptStep.message = 'Decrypt succeeded after tamper';
+              decryptStep.detail = `No client-side tamper error was raised. Expected signal: ${expectedSignal}.`;
+            } catch (decryptErr) {
+              if (decryptErr?.tampered) {
+                detectedCount += 1;
+                decryptStep.status = 'detected';
+                decryptStep.message = 'Tamper detected during decrypt';
+                decryptStep.detail = `${expectedSignal} confirmed on attempt ${attempt}.`;
+                appendCryptoLog({
+                  type:   'tamper-detection',
+                  msg:    `Detection confirmed on attempt ${attempt}`,
+                  detail: `${targetLabel} tamper triggered ${expectedSignal}.`,
+                  params: {},
+                });
+              } else {
+                decryptStep.status = 'error';
+                decryptStep.message = 'Decrypt failed for non-tamper reason';
+                decryptStep.detail = decryptErr?.message || 'Unknown decrypt failure';
+              }
+            }
+          } catch (err) {
+            decryptStep.status = 'error';
+            decryptStep.message = 'Decrypt check could not run';
+            decryptStep.detail = err.message;
+          }
+
+          steps.push(decryptStep);
+        }
+
+        if (attempt < attempts) {
+          await new Promise(resolve => setTimeout(resolve, 500));
+        }
+      }
+
+      const summary = verificationRuns > 0
+        ? `${detectedCount}/${verificationRuns} auto-decrypt checks raised tamper detection.`
+        : 'Tamper injected. Run manual decrypt to verify client-side detection.';
+
+      setTamperResults(prev => ({
+        ...prev,
+        [envelope.id]: {
+          steps,
+          target,
+          targetLabel,
+          detected: detectedCount > 0,
+          summary,
+        }
+      }));
+
+      setLastResult({
+        ok: verificationRuns === 0 || detectedCount > 0,
+        msg: `Tamper Lab complete on ${targetLabel}. ${summary}`,
       });
-      setLastResult({ ok: false, msg: `⚠️ Ciphertext of #${envelope.id} corrupted. Try decrypting to trigger the Tamper Alert.` });
     } finally {
       setTamperingId(null);
     }
@@ -348,7 +503,6 @@ export default function App() {
           <Badge label="Asymmetric"  value={`RSA-${serverKeyInfo.keyBits}-OAEP`} color="blue" />
           <Badge label="Symmetric"   value="AES-256-GCM"         color="green" />
           <Badge label="Signature"   value="ECDSA-P256"          color="purple" />
-          <Badge label="KDF"         value="PBKDF2-SHA256"       color="orange" />
           <Badge label="IV"          value="96-bit"              color="cyan" />
           <Badge label="Auth Tag"    value="128-bit"             color="cyan" />
         </div>
@@ -418,30 +572,6 @@ export default function App() {
                 )}
               </div>
 
-              {/* Password (optional) */}
-              <div className="field-group">
-                <label className="field-label">
-                  Password Protection <span className="optional">(optional — PBKDF2 layer)</span>
-                </label>
-                <div className="password-row">
-                  <input
-                    type={showPassword ? 'text' : 'password'}
-                    className="field-input"
-                    placeholder="Leave blank to skip password layer"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                  />
-                  <button className="eye-btn" onClick={() => setShowPassword(!showPassword)}>
-                    {showPassword ? '🙈' : '👁'}
-                  </button>
-                </div>
-                {password && (
-                  <p className="field-hint">
-                    PBKDF2-SHA256 · 310,000 iterations · 128-bit random salt
-                  </p>
-                )}
-              </div>
-
               {/* Encrypt Button */}
               <button
                 className="btn-primary"
@@ -489,12 +619,6 @@ export default function App() {
                   alg="ECDSA P-256"
                   detail="SHA-256 · Non-repudiation · FIPS 186-4"
                 />
-                <AlgoCard
-                  icon="🔐"
-                  title="Password Layer"
-                  alg="PBKDF2-SHA256"
-                  detail="310,000 iterations · 128-bit salt"
-                />
               </div>
             </div>
           )}
@@ -525,7 +649,6 @@ export default function App() {
                           </div>
                         </div>
                         <div className="env-badges">
-                          {env.passwordProtected && <span className="tag tag-orange">🔐 PW</span>}
                           {env.signed              && <span className="tag tag-purple">✍️ Signed</span>}
                           {env.shredded            && <span className="tag tag-red">🗑️ Shredded</span>}
                         </div>
@@ -569,10 +692,10 @@ export default function App() {
                           <button
                             className="btn-action btn-tamper"
                             disabled={tamperingId === env.id}
-                            onClick={() => handleSimulateTamper(env)}
-                            title="[DEMO] Corrupt 1 byte to test tamper detection"
+                            onClick={() => toggleTamperLab(env.id)}
+                            title="Open Tamper Lab for configurable attacks"
                           >
-                            {tamperingId === env.id ? <><span className="spinner" /> …</> : '⚡ Sim Tamper'}
+                            🧪 Tamper Lab
                           </button>
                           <button
                             className="btn-action btn-shred"
@@ -581,6 +704,124 @@ export default function App() {
                           >
                             {shreddingId === env.id ? <><span className="spinner" /> Shredding…</> : '🗑️ Shred'}
                           </button>
+                        </div>
+                      )}
+
+                      {/* Tamper Lab Panel */}
+                      {tamperLabStates[env.id] && (
+                        <div className="tamper-lab-panel">
+                          <div className="tamper-header">
+                            <h4>🧪 Tamper Lab — Attack Simulator</h4>
+                            <button
+                              className="btn-close"
+                              onClick={() => toggleTamperLab(env.id)}
+                              title="Close Tamper Lab"
+                            >
+                              ✕
+                            </button>
+                          </div>
+
+                          <div className="tamper-config">
+                            <div className="config-row">
+                              <div className="config-item">
+                                <label>Attack Target:</label>
+                                <select
+                                  className="config-select"
+                                  value={tamperLabStates[env.id]?.target || 'ciphertext'}
+                                  onChange={(e) => updateTamperLabState(env.id, { target: e.target.value })}
+                                  disabled={tamperingId === env.id}
+                                >
+                                  <option value="ciphertext">Ciphertext (AES-GCM)</option>
+                                  <option value="iv">IV (Initialization Vector)</option>
+                                  <option value="tag">Signature Tag (ECDSA)</option>
+                                </select>
+                              </div>
+
+                              <div className="config-item">
+                                <label>Attempts:</label>
+                                <input
+                                  type="number"
+                                  className="config-input"
+                                  min="1"
+                                  max="5"
+                                  value={tamperLabStates[env.id]?.attempts || 1}
+                                  onChange={(e) => {
+                                    const value = Math.min(5, Math.max(1, Number(e.target.value) || 1));
+                                    updateTamperLabState(env.id, { attempts: value });
+                                  }}
+                                  disabled={tamperingId === env.id}
+                                />
+                              </div>
+
+                              <div className="config-item checkbox">
+                                <label>
+                                  <input
+                                    type="checkbox"
+                                    checked={tamperLabStates[env.id]?.autoDecrypt || false}
+                                    onChange={(e) => updateTamperLabState(env.id, { autoDecrypt: e.target.checked })}
+                                    disabled={tamperingId === env.id}
+                                  />
+                                  Auto-Decrypt Check
+                                </label>
+                              </div>
+
+                              <button
+                                className="btn-tamper-execute"
+                                disabled={tamperingId === env.id}
+                                onClick={() => handleExecuteTamperLab(env)}
+                              >
+                                {tamperingId === env.id ? (
+                                  <><span className="spinner" /> Executing…</>
+                                ) : (
+                                  '▶ Execute Attack'
+                                )}
+                              </button>
+                            </div>
+                            <div className="tamper-hint">
+                              Selected target: <strong>{getTamperTargetMeta(tamperLabStates[env.id]?.target).label}</strong>
+                              {' '}· Expected signal: {getTamperTargetMeta(tamperLabStates[env.id]?.target).expectedSignal}
+                            </div>
+                          </div>
+
+                          {/* Tamper Results Timeline */}
+                          {tamperResults[env.id] && (
+                            <div className="tamper-results">
+                              <div className="results-header">
+                                <h5>📊 Attack Results</h5>
+                                <span className={`detection-badge ${tamperResults[env.id].detected ? 'detected' : 'not-detected'}`}>
+                                  {tamperResults[env.id].detected ? '🚨 Detected' : '⚠️ Simulated'}
+                                </span>
+                              </div>
+                              <div className="timeline">
+                                {tamperResults[env.id].steps.map((step, idx) => (
+                                  <div key={idx} className={`timeline-item stage-${step.stage} status-${step.status}`}>
+                                    <div className="timeline-marker">
+                                      {step.stage === 'tamper' && '💉'}
+                                      {step.stage === 'decrypt' && '🔓'}
+                                    </div>
+                                    <div className="timeline-content">
+                                      <div className="timeline-title">
+                                        Attempt {step.attempt} · {step.stage === 'tamper' ? 'Inject Attack' : 'Verify Detection'}
+                                      </div>
+                                      <div className="timeline-status">
+                                        {step.status === 'success' && '✓ '}
+                                        {step.status === 'detected' && '🚨 '}
+                                        {step.status === 'undetected' && '⚠️ '}
+                                        {step.status === 'error' && '✗ '}
+                                        {step.message}
+                                      </div>
+                                      {step.detail && <div className="timeline-detail">{step.detail}</div>}
+                                      <div className="timeline-time">{step.timestamp}</div>
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                              <div className="results-summary">
+                                <strong>Summary:</strong> {tamperResults[env.id].summary}
+                                <span className="results-target">Target: {tamperResults[env.id].targetLabel || tamperResults[env.id].target}</span>
+                              </div>
+                            </div>
+                          )}
                         </div>
                       )}
                     </div>

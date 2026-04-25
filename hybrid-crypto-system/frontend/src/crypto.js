@@ -9,7 +9,6 @@
  *   Symmetric  : AES-256-GCM      (NIST SP 800-38D)
  *   Asymmetric : RSA-4096-OAEP    (PKCS#1 v2.2 / RFC 8017)
  *   Signature  : ECDSA P-256      (FIPS 186-4)
- *   KDF        : PBKDF2-SHA256    (NIST SP 800-132) — optional password layer
  *   Random     : window.crypto.getRandomValues (CSPRNG)
  */
 
@@ -177,69 +176,6 @@ export const exportPublicKey = async (publicKey) => {
   return toBase64(spki);
 };
 
-// ─── PBKDF2 — Optional Password Protection Layer ─────────────────────────────
-
-/**
- * Derives an AES-256 wrapping key from a user password using PBKDF2-SHA256.
- *
- * Parameters follow OWASP recommendations:
- *   Iterations : 310,000  (OWASP 2023 minimum for PBKDF2-SHA256)
- *   Salt       : 128-bit random
- *
- * This wrapping key is used to additionally encrypt (wrap) the AES session key,
- * creating a two-factor envelope: knowledge (password) + possession (server key).
- */
-export const deriveKeyFromPassword = async (password, saltBytes) => {
-  const enc = new TextEncoder();
-  const keyMaterial = await subtle.importKey(
-    'raw',
-    enc.encode(password),
-    'PBKDF2',
-    false,
-    ['deriveKey']
-  );
-  return subtle.deriveKey(
-    {
-      name:       'PBKDF2',
-      salt:       saltBytes,
-      iterations: 310_000,
-      hash:       'SHA-256',
-    },
-    keyMaterial,
-    { name: 'AES-GCM', length: 256 },
-    true,
-    ['wrapKey', 'unwrapKey']
-  );
-};
-
-/**
- * Wraps the AES session key with the PBKDF2-derived password key.
- * Produces an additional layer of encryption over the session key.
- */
-export const wrapKeyWithPassword = async (aesKey, passwordKey) => {
-  const wrapIv = randomBytes(12);
-  const wrapped = await subtle.wrapKey(
-    'raw', aesKey, passwordKey,
-    { name: 'AES-GCM', iv: wrapIv, tagLength: 128 }
-  );
-  return { wrapped, wrapIv };
-};
-
-export const unwrapKeyWithPassword = async (pwWrappedBase64, pwWrapIvBase64, pbkdf2SaltBase64, password) => {
-  const salt      = new Uint8Array(fromBase64(pbkdf2SaltBase64));
-  const passwordKey = await deriveKeyFromPassword(password, salt);
-  const wrapIv    = new Uint8Array(fromBase64(pwWrapIvBase64));
-  return subtle.unwrapKey(
-    'raw',
-    fromBase64(pwWrappedBase64),
-    passwordKey,
-    { name: 'AES-GCM', iv: wrapIv, tagLength: 128 },
-    { name: 'AES-GCM', length: 256 },
-    false,
-    ['decrypt']
-  );
-};
-
 // ─── Full Hybrid Encrypt Flow ─────────────────────────────────────────────────
 
 /**
@@ -251,7 +187,6 @@ export const unwrapKeyWithPassword = async (pwWrappedBase64, pwWrapIvBase64, pbk
  *   3. Encrypt file:     ciphertext = AES-256-GCM( plaintext, sessionKey, IV )
  *   4. Wrap session key: encKey     = RSA-4096-OAEP( sessionKey, serverPubKey )
  *   5. Sign ciphertext:  sig        = ECDSA-P256( ciphertext, signingPrivKey )
- *   6. [Optional] PBKDF2 wrap of session key with password
  *
  * Returns the complete digital envelope payload ready to POST to the server.
  *
@@ -259,7 +194,6 @@ export const unwrapKeyWithPassword = async (pwWrappedBase64, pwWrapIvBase64, pbk
  * @param {CryptoKey}  rsaPublicKey   - Server's RSA-4096-OAEP public key
  * @param {CryptoKey}  signingPrivKey - Sender's ECDSA P-256 private key
  * @param {CryptoKey}  signingPubKey  - Sender's ECDSA P-256 public key (for server storage)
- * @param {string|null} password      - Optional password for PBKDF2 layer
  * @param {Function}   onProgress     - Progress callback (0–100)
  */
 export const hybridEncryptFile = async (
@@ -267,7 +201,6 @@ export const hybridEncryptFile = async (
   rsaPublicKey,
   signingPrivKey,
   signingPubKey,
-  password = null,
   onProgress = () => {}
 ) => {
   const log = [];
@@ -301,24 +234,6 @@ export const hybridEncryptFile = async (
   const sigPubKeyB64 = await exportPublicKey(signingPubKey);
   addLog('Signature generated.', `Algorithm: ECDSA-P256-SHA256`);
 
-  // Step 6: Optional PBKDF2 password layer
-  let pbkdf2SaltBase64 = null;
-  let passwordProtected = false;
-  // NEW
-  let pwWrappedAesKeyBase64 = null;
-  let pwWrapIvBase64        = null;
-  if (password) {
-    addLog('Applying PBKDF2 password layer (SHA-256, 310,000 iterations)...');
-    const salt = randomBytes(16);
-    pbkdf2SaltBase64 = toBase64(salt);
-    const passKey = await deriveKeyFromPassword(password, salt);
-    const { wrapped: pwWrapped, wrapIv } = await wrapKeyWithPassword(aesKey, passKey);
-    pwWrappedAesKeyBase64 = toBase64(pwWrapped);
-    pwWrapIvBase64        = toBase64(wrapIv);
-    passwordProtected     = true;
-    addLog('Password layer applied.', `PBKDF2-SHA256 | Iterations: 310,000 | Salt: ${toHex(salt)}`);
-  }
-
   return {
     // Envelope payload
     fileName:              file.name,
@@ -329,11 +244,6 @@ export const hybridEncryptFile = async (
     encryptedAesKeyBase64: toBase64(wrappedKey),
     signatureBase64:       toBase64(signature),
     signingPublicKeyBase64: sigPubKeyB64,
-    passwordProtected,
-    pbkdf2SaltBase64,
-    // add alongside pbkdf2SaltBase64 in the return payload
-    pwWrappedAesKeyBase64,
-    pwWrapIvBase64,
     // Crypto parameter transparency
     cryptoParams: {
       aesKeyBits:    keyBits,
@@ -344,7 +254,6 @@ export const hybridEncryptFile = async (
       asymAlgorithm: 'RSA-4096-OAEP-SHA256',
       sigAlgorithm:  'ECDSA-P256-SHA256',
       rsaKeyBits:    4096,
-      pbkdf2:        passwordProtected ? 'PBKDF2-SHA256-310000' : 'none',
     },
     log,
   };
@@ -358,27 +267,13 @@ export const hybridEncryptFile = async (
  * If the GCM authentication tag does not match (tampered ciphertext),
  * this function throws with { tampered: true }.
  */
-// NEW
-export const hybridDecryptEnvelope = async (serverResponse, password = null) => {
+export const hybridDecryptEnvelope = async (serverResponse) => {
   const {
     encryptedFileBase64, ivBase64, fileName,
     rawAesKeyBase64,
-    passwordProtected, pwWrappedAesKeyBase64, pwWrapIvBase64, pbkdf2SaltBase64,
   } = serverResponse;
 
-  let aesKey;
-  if (passwordProtected) {
-    if (!password) throw new Error('Password required to decrypt this envelope.');
-    try {
-      aesKey = await unwrapKeyWithPassword(
-        pwWrappedAesKeyBase64, pwWrapIvBase64, pbkdf2SaltBase64, password
-      );
-    } catch {
-      throw new Error('Incorrect password — PBKDF2 key derivation or unwrap failed.');
-    }
-  } else {
-    aesKey = await importRawAESKey(fromBase64(rawAesKeyBase64));
-  }
+  const aesKey = await importRawAESKey(fromBase64(rawAesKeyBase64));
 
   try {
     const plaintext = await decryptAES(fromBase64(encryptedFileBase64), aesKey, ivBase64);

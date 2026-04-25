@@ -177,15 +177,12 @@ body {
 .field-label    { display: block; font-size: 12px; font-weight: 600; color: var(--text-sec);
                   margin-bottom: 8px; text-transform: uppercase; letter-spacing: .5px; }
 .optional       { text-transform: none; font-weight: 400; color: var(--text-dim); }
-.password-row   { display: flex; gap: 8px; }
 .field-input    { flex: 1; background: var(--bg-2); border: 1px solid var(--border);
                   border-radius: var(--radius); padding: 10px 14px; color: var(--text-pri);
                   font-size: 14px; outline: none; transition: border-color .15s; }
 .field-input:focus { border-color: var(--cyan-dim); }
 .field-input::placeholder { color: var(--text-dim); }
 .field-hint     { font-size: 11px; color: var(--cyan-dim); margin-top: 6px; }
-.eye-btn        { background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--radius);
-                  padding: 0 14px; cursor: pointer; font-size: 16px; }
 
 /* ── Buttons ────────────────────────────────────────────────────────────────── */
 .btn-primary {
@@ -299,6 +296,307 @@ code        { font-family: var(--mono); }
 .btn-tamper:hover:not(:disabled)  { background: rgba(255,171,64,.1); }
 .btn-shred    { border-color: var(--red);        color: var(--red); }
 .btn-shred:hover:not(:disabled)   { background: rgba(255,44,44,.1); }
+
+/* ── Tamper Lab Panel ───────────────────────────────────────────────────────── */
+.tamper-lab-panel {
+  margin-top: 16px;
+  padding: 14px 14px 12px;
+  background: rgba(20, 26, 46, .75);
+  border: 1px solid rgba(255,171,64,.28);
+  border-radius: var(--radius-lg);
+}
+
+.tamper-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid rgba(255,171,64,.15);
+}
+
+.tamper-header h4 {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--orange);
+  margin: 0;
+  letter-spacing: .3px;
+  text-transform: uppercase;
+}
+
+.btn-close {
+  background: transparent;
+  border: 1px solid rgba(255,107,107,.3);
+  color: var(--red);
+  padding: 4px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  transition: all .15s;
+}
+
+.btn-close:hover { background: rgba(255,107,107,.1); border-color: var(--red); }
+
+.tamper-config {
+  margin-bottom: 12px;
+}
+
+.config-row {
+  display: grid;
+  grid-template-columns: minmax(190px, 1.35fr) minmax(120px, .6fr) minmax(170px, .95fr) auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.config-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.config-item.checkbox {
+  flex-direction: row;
+  align-items: center;
+}
+
+.config-item label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-sec);
+  text-transform: uppercase;
+  letter-spacing: .4px;
+}
+
+.config-item.checkbox label {
+  text-transform: none;
+  font-weight: 500;
+  color: var(--text-pri);
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.config-item.checkbox input {
+  cursor: pointer;
+  accent-color: var(--orange);
+}
+
+.config-select,
+.config-input {
+  background: var(--bg-2);
+  border: 1px solid #324b74;
+  color: var(--text-pri);
+  padding: 6px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: var(--mono);
+  outline: none;
+  transition: border-color .15s;
+}
+
+.config-select:hover,
+.config-input:hover {
+  border-color: var(--border-lit);
+}
+
+.config-select:focus,
+.config-input:focus {
+  border-color: var(--orange);
+  box-shadow: 0 0 8px rgba(255,171,64,.2);
+}
+
+.config-select:disabled,
+.config-input:disabled {
+  opacity: .5;
+  cursor: not-allowed;
+}
+
+.btn-tamper-execute {
+  background: linear-gradient(180deg, rgba(255,171,64,.18), rgba(255,171,64,.08));
+  border: 1px solid var(--orange);
+  color: var(--orange);
+  padding: 6px 14px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  transition: all .15s;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.btn-tamper-execute:hover:not(:disabled) {
+  background: linear-gradient(180deg, rgba(255,171,64,.28), rgba(255,171,64,.16));
+  box-shadow: 0 0 0 1px rgba(255,171,64,.18) inset;
+}
+
+.btn-tamper-execute:disabled {
+  opacity: .5;
+  cursor: not-allowed;
+}
+
+.tamper-hint {
+  margin-top: 8px;
+  padding: 7px 9px;
+  border-radius: 4px;
+  background: rgba(0, 229, 255, .05);
+  border: 1px solid rgba(0, 229, 255, .16);
+  color: var(--text-sec);
+  font-size: 11px;
+}
+
+.tamper-hint strong {
+  color: var(--text-pri);
+}
+
+.tamper-results {
+  margin-top: 12px;
+  padding: 10px;
+  background: rgba(255,171,64,.04);
+  border: 1px solid rgba(255,171,64,.1);
+  border-radius: 6px;
+}
+
+.results-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid rgba(255,171,64,.1);
+}
+
+.results-header h5 {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--orange);
+  margin: 0;
+}
+
+.detection-badge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 8px;
+  border-radius: 3px;
+  background: rgba(255,107,107,.15);
+  color: var(--red);
+}
+
+.detection-badge.detected {
+  background: rgba(255,68,68,.2);
+  color: #ff5555;
+}
+
+.detection-badge.not-detected {
+  background: rgba(255,171,64,.15);
+  color: var(--orange);
+}
+
+.timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.timeline-item {
+  display: flex;
+  gap: 10px;
+  padding: 8px;
+  background: var(--bg-2);
+  border-left: 3px solid rgba(255,171,64,.3);
+  border-radius: 4px;
+  font-size: 11px;
+}
+
+.timeline-item.status-success {
+  border-left-color: var(--green-dim);
+}
+
+.timeline-item.status-detected {
+  border-left-color: var(--red);
+  background: rgba(255,68,68,.08);
+}
+
+.timeline-item.status-error {
+  border-left-color: #ff9999;
+  background: rgba(255,107,107,.08);
+}
+
+.timeline-item.status-undetected {
+  border-left-color: var(--orange);
+  background: rgba(255,171,64,.08);
+}
+
+.timeline-marker {
+  font-size: 14px;
+  flex-shrink: 0;
+  min-width: 20px;
+  text-align: center;
+}
+
+.timeline-content {
+  flex: 1;
+}
+
+.timeline-title {
+  font-weight: 600;
+  color: var(--text-pri);
+  margin-bottom: 2px;
+}
+
+.timeline-status {
+  color: var(--text-sec);
+  margin-bottom: 2px;
+  word-break: break-word;
+}
+
+.timeline-detail {
+  color: var(--text-dim);
+  margin-bottom: 3px;
+  line-height: 1.35;
+}
+
+.timeline-time {
+  font-size: 10px;
+  color: var(--text-dim);
+  font-family: var(--mono);
+}
+
+.results-summary {
+  font-size: 11px;
+  color: var(--text-sec);
+  padding: 8px;
+  background: rgba(0,0,0,.2);
+  border-radius: 4px;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+
+.results-target {
+  background: rgba(0,229,255,.1);
+  border: 1px solid rgba(0,229,255,.2);
+  color: var(--cyan);
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+@media (max-width: 900px) {
+  .config-row {
+    grid-template-columns: 1fr;
+  }
+
+  .btn-tamper-execute {
+    width: 100%;
+    justify-content: center;
+  }
+}
 
 /* ── Audit Table ────────────────────────────────────────────────────────────── */
 .audit-table-wrap { overflow-x: auto; }

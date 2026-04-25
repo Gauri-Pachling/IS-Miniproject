@@ -33,7 +33,7 @@ import java.util.*;
  *   GET    /api/crypto/envelopes          → List stored envelopes
  *   POST   /api/crypto/decrypt/{id}       → Unwrap AES session key (KEM decapsulation)
  *   POST   /api/crypto/verify/{id}        → Verify ECDSA signature
- *   POST   /api/crypto/tamper/{id}        → [DEMO] Corrupt ciphertext to test tamper detection
+ *   POST   /api/crypto/tamper/{id}?target=X → [DEMO] Tamper Lab: corrupt by target (ciphertext|iv|tag)
  *   DELETE /api/crypto/shred/{id}         → Secure file shred (overwrite & delete)
  *   GET    /api/crypto/audit-log          → Retrieve audit log
  *
@@ -111,11 +111,6 @@ public class SecurityController {
                     // Signature
                     .signatureBase64(dto.getSignatureBase64())
                     .signingPublicKeyBase64(dto.getSigningPublicKeyBase64())
-                    // PBKDF2
-                    .passwordProtected(dto.isPasswordProtected())
-                    .pbkdf2SaltBase64(dto.getPbkdf2SaltBase64())
-                    .pwWrappedAesKeyBase64(dto.getPwWrappedAesKeyBase64())
-                    .pwWrapIvBase64(dto.getPwWrapIvBase64())
                     // Crypto parameter audit trail
                     .aesKeyBits("256")
                     .ivBits("96")
@@ -138,10 +133,9 @@ public class SecurityController {
                     .fileName(dto.getFileName())
                     .status(AuditLog.Status.SUCCESS)
                     .details(String.format(
-                            "Envelope stored. AES: %s-GCM | RSA: %s-OAEP | IV: %s-bit | Tag: %s-bit | Signed: %s | PwdProtected: %s",
+                            "Envelope stored. AES: %s-GCM | RSA: %s-OAEP | IV: %s-bit | Tag: %s-bit | Signed: %s",
                             "256", "4096", "96", "128",
-                            dto.getSignatureBase64() != null,
-                            dto.isPasswordProtected()
+                            dto.getSignatureBase64() != null
                     ))
                     .envelopeId(saved.getId())
                     .clientIp(clientIp)
@@ -185,7 +179,6 @@ public class SecurityController {
                     m.put("fileSizeBytes",    e.getFileSizeBytes());
                     m.put("uploadedAt",       e.getUploadedAt().toString());
                     m.put("shredded",         e.isShredded());
-                    m.put("passwordProtected",e.isPasswordProtected());
                     m.put("signed",           e.getSignatureBase64() != null);
                     m.put("symAlgorithm",     e.getSymAlgorithm());
                     m.put("asymAlgorithm",    e.getAsymAlgorithm());
@@ -257,15 +250,7 @@ public class SecurityController {
             response.put("fileName",             envelope.getFileName());
             response.put("encryptedFileBase64",  envelope.getEncryptedFileBase64());
             response.put("ivBase64",             envelope.getIvBase64());
-            // NEW — password-protected envelopes send pw-wrapped key; browser unwraps with password
-                response.put("passwordProtected", envelope.isPasswordProtected());
-                if (envelope.isPasswordProtected()) {
-                response.put("pwWrappedAesKeyBase64", envelope.getPwWrappedAesKeyBase64());
-                response.put("pwWrapIvBase64",        envelope.getPwWrapIvBase64());
-                response.put("pbkdf2SaltBase64",      envelope.getPbkdf2SaltBase64());
-                } else {
-                response.put("rawAesKeyBase64", rawAesKeyBase64);
-                }  // 32 raw bytes
+            response.put("rawAesKeyBase64",      rawAesKeyBase64);  // 32 raw bytes
             response.put("aesKeyBits",           envelope.getAesKeyBits());
             response.put("tagBits",              envelope.getTagBits());
             response.put("note", "AES session key decapsulated server-side. " +
@@ -355,17 +340,24 @@ public class SecurityController {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // 6. TAMPER SIMULATION — corrupt 1 byte to demo GCM auth-tag detection
+    // 6. TAMPER SIMULATION — corrupt envelope with configurable target
     // ─────────────────────────────────────────────────────────────────────────
 
     /**
      * [DEMO / EDUCATIONAL ONLY]
-     * Flips one byte in the stored ciphertext to demonstrate AES-GCM
-     * tamper detection. The next decryption attempt will fail with a
-     * 'Tamper Alert' because the 128-bit authentication tag won't match.
+     * Simulates a tampering attack on a digital envelope with configurable target:
+     *   target="ciphertext" → Flip byte 0 of encrypted data
+     *   target="iv"        → Flip byte 0 of IV
+     *   target="tag"       → Flip byte 0 of signature (authentication tag)
+     *
+     * Returns step-by-step result showing what was corrupted and whether
+     * decryption would detect it.
      */
     @PostMapping("/tamper/{id}")
-    public ResponseEntity<Map<String, Object>> simulateTamper(@PathVariable Long id) {
+    public ResponseEntity<Map<String, Object>> simulateTamper(
+            @PathVariable Long id,
+            @RequestParam(defaultValue = "ciphertext") String target,
+            @RequestParam(defaultValue = "1") int attempt) {
         Optional<DigitalEnvelope> opt = envelopeRepository.findById(id);
         if (opt.isEmpty()) return notFound("Envelope " + id + " not found");
 
@@ -376,26 +368,109 @@ public class SecurityController {
         }
 
         try {
-            // Decode → flip bit 7 of byte 0 in the ciphertext → re-encode
-            byte[] cipherBytes = Base64.getDecoder().decode(envelope.getEncryptedFileBase64());
-            cipherBytes[0] ^= 0xFF;                   // XOR flip: corrupt first byte
-            String tamperedBase64 = Base64.getEncoder().encodeToString(cipherBytes);
-            envelope.setEncryptedFileBase64(tamperedBase64);
+            String corruptedField = "";
+            String targetDesc = "";
+                        String beforeBase64 = "";
+                        String afterBase64 = "";
+                        int byteIndex;
+                        int beforeByte;
+                        int afterByte;
+
+                        int normalizedAttempt = Math.max(1, attempt);
+
+            if (target.equalsIgnoreCase("ciphertext")) {
+                                beforeBase64 = envelope.getEncryptedFileBase64();
+                                byte[] cipherBytes = Base64.getDecoder().decode(beforeBase64);
+                                if (cipherBytes.length == 0) {
+                                        return ResponseEntity.badRequest().body(Map.of("error", "Ciphertext is empty."));
+                                }
+                                byteIndex = (normalizedAttempt - 1) % cipherBytes.length;
+                                beforeByte = Byte.toUnsignedInt(cipherBytes[byteIndex]);
+                                cipherBytes[byteIndex] = (byte) ((cipherBytes[byteIndex] + 1) & 0xFF);
+                                afterByte = Byte.toUnsignedInt(cipherBytes[byteIndex]);
+                                afterBase64 = Base64.getEncoder().encodeToString(cipherBytes);
+                                envelope.setEncryptedFileBase64(afterBase64);
+                corruptedField = "encryptedFileBase64";
+                                targetDesc = "Ciphertext";
+            } else if (target.equalsIgnoreCase("iv")) {
+                                beforeBase64 = envelope.getIvBase64();
+                                byte[] ivBytes = Base64.getDecoder().decode(beforeBase64);
+                                if (ivBytes.length == 0) {
+                                        return ResponseEntity.badRequest().body(Map.of("error", "IV is empty."));
+                                }
+                                byteIndex = (normalizedAttempt - 1) % ivBytes.length;
+                                beforeByte = Byte.toUnsignedInt(ivBytes[byteIndex]);
+                                ivBytes[byteIndex] = (byte) ((ivBytes[byteIndex] + 1) & 0xFF);
+                                afterByte = Byte.toUnsignedInt(ivBytes[byteIndex]);
+                                afterBase64 = Base64.getEncoder().encodeToString(ivBytes);
+                                envelope.setIvBase64(afterBase64);
+                corruptedField = "ivBase64";
+                                targetDesc = "IV";
+            } else if (target.equalsIgnoreCase("tag")) {
+                                if (envelope.getSignatureBase64() == null || envelope.getSignatureBase64().isBlank()) {
+                                        return ResponseEntity.badRequest().body(Map.of("error", "Envelope has no signature/tag to tamper."));
+                                }
+                                beforeBase64 = envelope.getSignatureBase64();
+                                byte[] sigBytes = Base64.getDecoder().decode(beforeBase64);
+                                if (sigBytes.length == 0) {
+                                        return ResponseEntity.badRequest().body(Map.of("error", "Signature/tag is empty."));
+                                }
+                                byteIndex = (normalizedAttempt - 1) % sigBytes.length;
+                                beforeByte = Byte.toUnsignedInt(sigBytes[byteIndex]);
+                                sigBytes[byteIndex] = (byte) ((sigBytes[byteIndex] + 1) & 0xFF);
+                                afterByte = Byte.toUnsignedInt(sigBytes[byteIndex]);
+                                afterBase64 = Base64.getEncoder().encodeToString(sigBytes);
+                                envelope.setSignatureBase64(afterBase64);
+                corruptedField = "signatureBase64";
+                                targetDesc = "Signature/Tag";
+            } else {
+                return ResponseEntity.badRequest()
+                        .body(Map.of("error", "Invalid target. Use: ciphertext, iv, or tag"));
+            }
+
+                        int changedCharIndex = -1;
+                        for (int i = 0; i < Math.min(beforeBase64.length(), afterBase64.length()); i++) {
+                                if (beforeBase64.charAt(i) != afterBase64.charAt(i)) {
+                                        changedCharIndex = i;
+                                        break;
+                                }
+                        }
+                        String beforeChar = changedCharIndex >= 0 ? String.valueOf(beforeBase64.charAt(changedCharIndex)) : "";
+                        String afterChar = changedCharIndex >= 0 ? String.valueOf(afterBase64.charAt(changedCharIndex)) : "";
+
             envelopeRepository.save(envelope);
 
             auditLogRepository.save(AuditLog.builder()
                     .eventType(AuditLog.EventType.TAMPER_DETECTED)
                     .fileName(envelope.getFileName())
                     .status(AuditLog.Status.FAILURE)
-                    .details("[SIMULATION] 1 byte of ciphertext corrupted (byte[0] XOR 0xFF). " +
-                             "AES-GCM 128-bit auth-tag will reject decryption.")
+                                        .details("[SIMULATION] Tamper Lab: " + targetDesc +
+                                                        " byte[" + byteIndex + "] " + String.format("0x%02X", beforeByte) +
+                                                        " -> " + String.format("0x%02X", afterByte) +
+                                                        (changedCharIndex >= 0
+                                                                        ? " | Base64 char[" + changedCharIndex + "] '" + beforeChar + "' -> '" + afterChar + "'"
+                                                                        : "") +
+                                                        " | envelope #" + id + " | attempt " + normalizedAttempt)
                     .envelopeId(id)
                     .build());
 
-            return ResponseEntity.ok(Map.of(
-                    "success", true,
-                    "message", "Ciphertext corrupted. Try decrypting to see the Tamper Alert triggered by AES-GCM auth-tag mismatch."
-            ));
+            Map<String, Object> response = new LinkedHashMap<>();
+            response.put("success", true);
+            response.put("target", target);
+            response.put("attempt", normalizedAttempt);
+            response.put("corruptedField", corruptedField);
+            response.put("mutatedByteIndex", byteIndex);
+            response.put("beforeByteHex", String.format("0x%02X", beforeByte));
+            response.put("afterByteHex", String.format("0x%02X", afterByte));
+            response.put("mutatedBase64CharIndex", changedCharIndex);
+            response.put("beforeBase64Char", beforeChar);
+            response.put("afterBase64Char", afterChar);
+            response.put("message", "Attack simulated on " + targetDesc +
+                    " at byte[" + byteIndex + "] (" + String.format("0x%02X", beforeByte) +
+                    " -> " + String.format("0x%02X", afterByte) + ").");
+            response.put("detected", true);
+
+            return ResponseEntity.ok(response);
         } catch (Exception e) {
             return ResponseEntity.internalServerError()
                     .body(Map.of("success", false, "error", e.getMessage()));
@@ -441,7 +516,6 @@ public class SecurityController {
         envelope.setEncryptedAesKeyBase64(shredMarker);
         envelope.setSignatureBase64(null);
         envelope.setSigningPublicKeyBase64(null);
-        envelope.setPbkdf2SaltBase64(null);
         envelope.setIvBase64(shredMarker.substring(0, 16));
         envelope.setShredded(true);
         envelope.setShreddedAt(LocalDateTime.now());
